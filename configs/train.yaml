@@ -1,0 +1,57 @@
+project_root: "."
+
+data:
+  labels_csv: "data/labels.csv"
+  real_val_csv: "data/real_val.csv"
+  image_size: [115, 115]
+  num_workers: 0
+  synthetic_val_uses_all_labels: true
+
+model:
+  embedding_dim: 64
+  base_channels: 32
+  dropout: 0.1
+  rarity_head: true
+
+train:
+  seed: 42
+  epochs: 80
+  batch_size: 64
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  rarity_loss_weight: 0.2
+  mixed_precision: true
+  save_dir: "outputs/checkpoints"
+
+augment:
+  scale_range: [0.92, 1.08]
+  translate_px: 5
+  hue_shift: 0.03
+  saturation: 0.12
+  brightness: 0.12
+  contrast: 0.12
+  gamma: [0.92, 1.08]
+  noise_std: 3.0
+  blur_probability: 0.15
+  sharpen_probability: 0.15
+  jpeg_probability: 0.15
+
+mask:
+  enabled: true
+  grid: 4
+  corners: ["top_left", "top_right", "bottom_right"]
+  inference_weight: 0.2
+  train_weight_range: [0.0, 0.4]
+
+prototype:
+  samples_per_appearance: 32
+  output_csv: "outputs/prototypes.csv"
+
+export:
+  onnx_path: "outputs/avatar.onnx"
+  opset: 17
+
+normalization:
+  mean: [0.5, 0.5, 0.5]
+  std: [0.5, 0.5, 0.5]
+

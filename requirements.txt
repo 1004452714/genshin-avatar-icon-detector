@@ -1,0 +1,12 @@
+--index-url https://download.pytorch.org/whl/cu121
+torch
+torchvision
+--extra-index-url https://pypi.org/simple
+opencv-python
+pandas
+scikit-learn
+pyyaml
+tqdm
+matplotlib
+onnx
+onnxruntime

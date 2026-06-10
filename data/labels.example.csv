@@ -1,0 +1,4 @@
+appearance_id,character_id,character_name,skin_id,rarity,image_path,background_path,split
+furina_default,furina,芙宁娜,default,5,data/avatars/furina_default.png,data/backgrounds/rarity_5.png,train
+furina_skin_01,furina,芙宁娜,skin_01,5,data/avatars/furina_skin_01.png,data/backgrounds/rarity_5.png,train
+ningguang_default,ningguang,凝光,default,4,data/avatars/ningguang_default.png,data/backgrounds/rarity_4.png,train

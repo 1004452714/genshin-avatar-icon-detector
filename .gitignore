@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+data/avatars/
+data/backgrounds/
+data/real_val/
+outputs/
+*.pt
+*.pth
+*.onnx
+*.csv
+!data/labels.example.csv
+!data/real_val.example.csv
