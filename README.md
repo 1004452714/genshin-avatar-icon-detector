@@ -1,23 +1,47 @@
 # AvatarDetect
 
-AvatarDetect 是一个用于角色头像/角色卡识别的 PyTorch 训练脚手架。它默认使用固定的 `115x115` 输入，支持用解包得到的透明角色图与稀有度背景合成训练图，并通过 embedding 向量检索返回角色。
+> [!IMPORTANT]
+> 本项目的代码、配置、文档和项目结构主要由 AI 生成。
 
-## 环境
+用于训练和测试原神角色头像/角色卡识别模型。模型导出为 `ONNX + prototypes.csv`，推理时按 `variant_id` 进行 embedding 检索，返回角色、皮肤和元素信息。
 
-当前仓库已经准备好的 Conda 环境是：
+## 数据目录
 
-```powershell
-conda activate avatardetect
-python -c "import torch; print(torch.cuda.is_available())"
-```
+仓库只提交代码、配置、示例 CSV、目录占位和 JSON 元数据；不提交训练 PNG、checkpoint、ONNX、prototypes、生成 labels 或测试截图。
 
-在这台机器上的预期结果：
+本地资源放置：
 
 ```text
-True
+assets/
+  icons/
+    avatars/    角色透明头像或皮肤图（UI_AvatarIcon_.*?）
+    elements/   左上角元素图标（UI_Buff_Element_.*?）
+  backgrounds/  稀有度背景图（UI_QUALITY_.*?）
+  overlays/
+    training/   右下角养成进度图标
+
+data/
+  metadata/
+    avatar_json/  角色 JSON 元数据
+  generated/      生成的 labels.csv
+  real_val/       真实游戏截图裁剪图，本地验证用
 ```
 
-如果以后需要重建环境，使用 `environment.yml`。PyTorch 使用 CUDA 12.1 wheel 安装，其他必要依赖来自 Conda defaults。图像增强逻辑已经在项目内用 OpenCV/Pillow 实现。
+PNG 文件名必须保持 JSON 中的原始 `Icon` / `FrontIcon` 名称，例如 `UI_AvatarIcon_Ayaka.png`。
+
+## 环境安装
+
+推荐使用 Python 3.11。安装完整训练环境：
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+如果需要 GPU 训练，在基础安装后按自己的显卡驱动和 CUDA 版本，从 PyTorch 官网选择对应命令重装 `torch`。例如 CUDA 12.1：
+
+```powershell
+python -m pip install --force-reinstall torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+```
 
 如果 Windows PowerShell 里中文输出乱码，先执行：
 
@@ -26,57 +50,107 @@ True
 $env:PYTHONIOENCODING = "utf-8"
 ```
 
-## 数据结构
+## 已有模型快速测试
 
-根据 [data/labels.example.csv](data/labels.example.csv) 创建 `data/labels.csv`：
+如果已经有兼容本项目的训练结果，只需要准备：
 
-```csv
-appearance_id,character_id,character_name,skin_id,rarity,image_path,background_path,split
-furina_default,furina,芙宁娜,default,5,data/avatars/furina_default.png,data/backgrounds/rarity_5.png,train
+- `outputs/avatar.onnx`
+- `outputs/prototypes.csv`
+- `configs/train.yaml`
+
+模型必须与当前 labels/prototypes 生成规则兼容，否则推理类别、向量维度或归一化参数可能不匹配。
+
+```powershell
+.\avatardetect.ps1 infer --image test\a.png
+.\avatardetect.ps1 real-val
 ```
 
-推荐放置：
+## 首次使用流程
 
-- `data/avatars/`：解包得到的透明角色图或皮肤图。
-- `data/backgrounds/`：从游戏资源拼出的稀有度背景。
-- `data/real_val/`：真实游戏截图裁剪图，用于验证和阈值校准。
+本仓库不包含训练 PNG。使用前需要自行获取素材，并按目录放好：
 
-保持 `appearance_id` 和 `character_id` 稳定。`character_name` 只是显示名称，后续可以修改。
+1. 放置角色 JSON：`data/metadata/avatar_json/*.json`。
+2. 放置角色头像 PNG：`assets/icons/avatars/`。
+3. 放置元素图标 PNG：`assets/icons/elements/`。
+4. 放置稀有度背景 PNG：`assets/backgrounds/`。
+5. 可选放置养成进度图标：`assets/overlays/training/`。
+6. 菜单选择 `1. 准备数据`，或运行 `.\avatardetect.ps1 prepare`。
+7. 校验通过后，菜单选择 `2. 开始完整训练`，或运行 `.\avatardetect.ps1 train`。
+
+根据 [data/labels.example.csv](data/labels.example.csv) 可检查生成标签结构：
+
+```csv
+variant_id,character_id,character_name,skin_id,skin_name,element_type,rarity,image_path,element_icon_path,background_path,split
+10000002_200200_冰,10000002,神里绫华,200200,莹辉流华,冰,5,assets/icons/avatars/UI_AvatarIcon_Ayaka.png,assets/icons/elements/UI_Buff_Element_Frost.png,assets/backgrounds/UI_QUALITY_ORANGE.png,train
+```
+
+保持 `variant_id` 和 `character_id` 稳定。`appearance_id` 在代码内部由 `character_id + "_" + skin_id` 派生，不写入生成 CSV。
 
 ## 常用命令
 
-校验数据：
+不传参数会进入菜单：
 
 ```powershell
-conda run -n avatardetect python scripts/validate_data.py --config configs/train.yaml
+.\avatardetect.ps1
 ```
 
-开始训练：
+准备数据：
 
 ```powershell
-conda run -n avatardetect python scripts/train.py --config configs/train.yaml
+.\avatardetect.ps1 prepare
 ```
 
-生成 prototype 向量库：
+从头训练并导出：
 
 ```powershell
-conda run -n avatardetect python scripts/build_prototypes.py --config configs/train.yaml --checkpoint outputs/checkpoints/best.pt --out outputs/prototypes.csv
+.\avatardetect.ps1 train
 ```
 
-导出 ONNX：
+单图测试：
 
 ```powershell
-conda run -n avatardetect python scripts/export_onnx.py --config configs/train.yaml --checkpoint outputs/checkpoints/best.pt --out outputs/avatar.onnx
+.\avatardetect.ps1 infer --image test\a.png
 ```
 
-单图推理匹配：
+真实截图验证：
 
 ```powershell
-conda run -n avatardetect python scripts/infer.py --config configs/train.yaml --model outputs/avatar.onnx --prototypes outputs/prototypes.csv --image path\to\crop.png
+.\avatardetect.ps1 real-val
 ```
 
-## 识别设计
+生成合成预览图：
 
-模型会为每个 `appearance_id` 学习一个 embedding，并通过向量库映射回 `character_id`。这样可以把不同皮肤作为不同外观 prototype 保存，同时最终返回同一个角色。
+```powershell
+.\avatardetect.ps1 preview
+```
 
-训练和推理都会对 `4x4` 网格中的左上、右上、右下角块应用 soft mask。默认权重是 `0.2`，这些区域不会被完全抹掉，但会降低对识别结果的影响。
+如果没有激活 conda 环境，可以指定 Python：
+
+```powershell
+.\avatardetect.ps1 -Python C:\ProgramData\anaconda3\envs\avatardetect\python.exe prepare
+```
+
+## 步骤说明
+
+菜单中的每个步骤会执行以下操作：
+
+- `1. 准备数据`：生成 `data/generated/labels.csv`，检查 Python 语法，并按 `configs/train.yaml` 校验图片、背景、标签字段是否可用。对应命令：`.\avatardetect.ps1 prepare`。
+- `2. 开始完整训练`：先准备数据，再清理旧的全量训练产物，然后从头训练，最后生成 `outputs/prototypes.csv` 并导出 `outputs/avatar.onnx`。对应命令：`.\avatardetect.ps1 train`。
+- `3. 单图测试`：提示输入一张图片路径，使用 `outputs/avatar.onnx` 和 `outputs/prototypes.csv` 输出 TopK 识别结果。对应命令：`.\avatardetect.ps1 infer --image test\a.png`。
+- `4. 真实截图验证`：读取 `data/real_val.csv`，对真实裁剪图做批量验证。对应命令：`.\avatardetect.ps1 real-val`。
+- `5. 生成预览图`：根据当前 labels 和配置生成合成预览图到 `outputs/previews/`，用于检查头像、背景、元素和养成图标合成效果。对应命令：`.\avatardetect.ps1 preview`。
+- `6. 清理生成物`：删除生成物和缓存，包括 `outputs/`、`data/generated/labels.csv`、`temp/` 和 `__pycache__/`；不会删除 `assets/` 下的训练 PNG。对应命令：`.\avatardetect.ps1 clean`。
+
+高级命令：
+
+- `prototypes`：用指定 checkpoint 重新生成 `prototypes.csv`，通常在训练完成后使用。
+- `export`：用指定 checkpoint 重新导出 ONNX，通常在训练完成后使用。
+- `train --skip-cleanup`：执行完整训练流程，但训练前不清理旧的 `outputs/checkpoints/`、`outputs/prototypes.csv`、`outputs/avatar.onnx`。
+
+## 识别规则
+
+- 模型为每个 `variant_id` 学习一个 embedding。
+- `variant_id` 表示 `character_id + skin_id + element_type` 的外观与元素组合。
+- `appearance_id` 不写入生成 CSV，由 `character_id` 和 `skin_id` 派生表示角色皮肤。
+- 推理时从 prototype 向量库映射回 `character_id`、`skin_name` 和 `element_type`。
+- 训练图会先在角色透明图原始画布上合成元素图标和可选养成图标，再整体缩放到 `115x115` 并叠加稀有度背景。

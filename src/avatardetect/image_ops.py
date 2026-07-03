@@ -28,6 +28,44 @@ def resize_cover(image: np.ndarray, size: tuple[int, int]) -> np.ndarray:
     return resized[y1 : y1 + target_h, x1 : x1 + target_w]
 
 
+def resize_rgba(image: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    target_w, target_h = size
+    interpolation = cv2.INTER_AREA
+    if target_w > image.shape[1] or target_h > image.shape[0]:
+        interpolation = cv2.INTER_LINEAR
+    return cv2.resize(image, (target_w, target_h), interpolation=interpolation)
+
+
+def overlay_rgba(base: np.ndarray, overlay: np.ndarray, x: int, y: int) -> np.ndarray:
+    out = base.copy()
+    h, w = out.shape[:2]
+    oh, ow = overlay.shape[:2]
+    x1 = max(0, x)
+    y1 = max(0, y)
+    x2 = min(w, x + ow)
+    y2 = min(h, y + oh)
+    if x1 >= x2 or y1 >= y2:
+        return out
+
+    ox1 = x1 - x
+    oy1 = y1 - y
+    ox2 = ox1 + (x2 - x1)
+    oy2 = oy1 + (y2 - y1)
+
+    src = overlay[oy1:oy2, ox1:ox2].astype(np.float32) / 255.0
+    dst = out[y1:y2, x1:x2].astype(np.float32) / 255.0
+    src_alpha = src[..., 3:4]
+    dst_alpha = dst[..., 3:4]
+    out_alpha = src_alpha + dst_alpha * (1.0 - src_alpha)
+    out_rgb = (src[..., :3] * src_alpha + dst[..., :3] * dst_alpha * (1.0 - src_alpha)) / np.maximum(
+        out_alpha,
+        1e-6,
+    )
+    merged = np.concatenate([out_rgb, out_alpha], axis=2)
+    out[y1:y2, x1:x2] = np.clip(merged * 255.0, 0, 255).astype(np.uint8)
+    return out
+
+
 def resize_contain_rgba(
     image: np.ndarray,
     size: tuple[int, int],
@@ -132,4 +170,3 @@ def solid_background(size: tuple[int, int], rarity: Any) -> np.ndarray:
     bg = np.zeros((h, w, 3), dtype=np.uint8)
     bg[:, :] = color
     return bg
-

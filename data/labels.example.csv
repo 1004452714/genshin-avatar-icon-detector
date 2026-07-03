@@ -1,4 +1,4 @@
-appearance_id,character_id,character_name,skin_id,rarity,image_path,background_path,split
-furina_default,furina,芙宁娜,default,5,data/avatars/furina_default.png,data/backgrounds/rarity_5.png,train
-furina_skin_01,furina,芙宁娜,skin_01,5,data/avatars/furina_skin_01.png,data/backgrounds/rarity_5.png,train
-ningguang_default,ningguang,凝光,default,4,data/avatars/ningguang_default.png,data/backgrounds/rarity_4.png,train
+variant_id,character_id,character_name,skin_id,skin_name,element_type,rarity,image_path,element_icon_path,background_path,split
+10000002_200200_冰,10000002,神里绫华,200200,莹辉流华,冰,5,assets/icons/avatars/UI_AvatarIcon_Ayaka.png,assets/icons/elements/UI_Buff_Element_Frost.png,assets/backgrounds/UI_QUALITY_ORANGE.png,train
+10000002_200201_冰,10000002,神里绫华,200201,花时来信,冰,5,assets/icons/avatars/UI_AvatarIcon_AyakaCostumeFruhling.png,assets/icons/elements/UI_Buff_Element_Frost.png,assets/backgrounds/UI_QUALITY_ORANGE.png,train
+10000006_200600_雷,10000006,丽莎,200600,蔷薇魔女,雷,4,assets/icons/avatars/UI_AvatarIcon_Lisa.png,assets/icons/elements/UI_Buff_Element_Elect.png,assets/backgrounds/UI_QUALITY_PURPLE.png,train

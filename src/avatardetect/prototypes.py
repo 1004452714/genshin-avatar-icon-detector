@@ -27,9 +27,9 @@ def build_prototypes(config_path: str | Path, checkpoint_path: str | Path, out_p
     samples = int(cfg.get("prototype", {}).get("samples_per_appearance", 32))
     rows = []
 
-    for _, row in tqdm(df.iterrows(), total=len(df)):
+    for _, row in tqdm(df.iterrows(), total=len(df), ascii=True):
         one = pd.DataFrame([row])
-        dataset = AvatarDataset(one, cfg["_project_root"], cfg, mappings, train=samples > 1)
+        dataset = AvatarDataset(one, cfg["_project_root"], cfg, mappings, train=samples > 1, prototype=True)
         vectors = []
         with torch.no_grad():
             for _ in range(max(1, samples)):
@@ -41,10 +41,12 @@ def build_prototypes(config_path: str | Path, checkpoint_path: str | Path, out_p
         proto = proto / max(np.linalg.norm(proto), 1e-12)
         rows.append(
             {
-                "appearance_id": row["appearance_id"],
+                "variant_id": row["variant_id"],
                 "character_id": row["character_id"],
                 "character_name": row["character_name"],
                 "skin_id": row["skin_id"],
+                "skin_name": row["skin_name"],
+                "element_type": row["element_type"],
                 "rarity": row["rarity"],
                 "embedding": encode_vector(proto),
             }

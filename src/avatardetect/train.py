@@ -9,7 +9,8 @@ from typing import Any
 import numpy as np
 import torch
 from torch import nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
+from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -31,13 +32,80 @@ def build_loaders(cfg: dict[str, Any]) -> tuple[DataLoader, DataLoader, dict[str
     train_df, val_df = split_labels(df)
     mappings = make_mappings(df)
     seed = int(cfg["train"].get("seed", 42))
-    train_set = AvatarDataset(train_df, root, cfg, mappings, train=True, seed=seed)
+    views_per_sample = int(cfg["train"].get("views_per_sample", 1))
+    train_set = AvatarDataset(train_df, root, cfg, mappings, train=True, seed=seed, views_per_sample=views_per_sample)
     val_set = AvatarDataset(val_df, root, cfg, mappings, train=False, seed=seed + 1)
     batch_size = int(cfg["train"].get("batch_size", 64))
     num_workers = int(cfg["data"].get("num_workers", 0))
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=num_workers)
     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     return train_loader, val_loader, mappings
+
+
+def top1_margins(score_logits: torch.Tensor, score_scale: float) -> list[float]:
+    if score_logits.shape[1] < 2:
+        return []
+    scores = score_logits / max(score_scale, 1e-12)
+    top2 = torch.topk(scores, k=2, dim=1).values
+    return (top2[:, 0] - top2[:, 1]).detach().cpu().tolist()
+
+
+def supervised_contrastive_loss(
+    embedding: torch.Tensor,
+    labels: torch.Tensor,
+    temperature: float,
+) -> torch.Tensor:
+    if embedding.shape[0] < 2:
+        return embedding.new_zeros(())
+    temperature = max(float(temperature), 1e-6)
+    logits = embedding @ embedding.T / temperature
+    logits = logits - logits.max(dim=1, keepdim=True).values.detach()
+    self_mask = torch.eye(logits.shape[0], dtype=torch.bool, device=logits.device)
+    positive_mask = labels[:, None].eq(labels[None, :]) & ~self_mask
+    positive_count = positive_mask.sum(dim=1)
+    valid = positive_count.gt(0)
+    if not valid.any():
+        return embedding.new_zeros(())
+
+    exp_logits = torch.exp(logits).masked_fill(self_mask, 0.0)
+    log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True).clamp_min(1e-12))
+    loss = -(log_prob * positive_mask).sum(dim=1)[valid] / positive_count[valid]
+    return loss.mean()
+
+
+def batch_hard_cosine_loss(
+    embedding: torch.Tensor,
+    labels: torch.Tensor,
+    margin: float,
+) -> torch.Tensor:
+    if embedding.shape[0] < 2:
+        return embedding.new_zeros(())
+    similarities = embedding @ embedding.T
+    self_mask = torch.eye(similarities.shape[0], dtype=torch.bool, device=similarities.device)
+    positive_mask = labels[:, None].eq(labels[None, :]) & ~self_mask
+    negative_mask = labels[:, None].ne(labels[None, :])
+    valid = positive_mask.any(dim=1) & negative_mask.any(dim=1)
+    if not valid.any():
+        return embedding.new_zeros(())
+
+    hardest_positive = similarities.masked_fill(~positive_mask, 1.0).min(dim=1).values
+    hardest_negative = similarities.masked_fill(~negative_mask, -1.0).max(dim=1).values
+    return torch.relu(float(margin) + hardest_negative[valid] - hardest_positive[valid]).mean()
+
+
+def target_logit_gap_loss(
+    score_logits: torch.Tensor,
+    labels: torch.Tensor,
+    score_scale: float,
+    margin: float,
+) -> torch.Tensor:
+    if score_logits.shape[1] < 2:
+        return score_logits.new_zeros(())
+    scores = score_logits / max(score_scale, 1e-12)
+    target_scores = scores.gather(1, labels[:, None]).squeeze(1)
+    target_mask = F.one_hot(labels, num_classes=scores.shape[1]).to(dtype=torch.bool, device=scores.device)
+    hardest_negative = scores.masked_fill(target_mask, -1e4).max(dim=1).values
+    return torch.relu(float(margin) - (target_scores - hardest_negative)).mean()
 
 
 def run_epoch(
@@ -54,24 +122,60 @@ def run_epoch(
     total_loss = 0.0
     total_correct = 0
     total_count = 0
+    margins: list[float] = []
     rarity_weight = float(cfg["train"].get("rarity_loss_weight", 0.0))
+    contrastive_weight = float(cfg["train"].get("contrastive_loss_weight", 0.0))
+    contrastive_temperature = float(cfg["train"].get("contrastive_temperature", 0.07))
+    hard_negative_weight = float(cfg["train"].get("hard_negative_loss_weight", 0.0))
+    hard_negative_margin = float(cfg["train"].get("hard_negative_margin", 0.12))
+    logit_gap_weight = float(cfg["train"].get("logit_gap_loss_weight", 0.0))
+    logit_gap_margin = float(cfg["train"].get("logit_gap_margin", 0.10))
     use_amp = bool(cfg["train"].get("mixed_precision", True)) and device.type == "cuda"
 
-    for batch in tqdm(loader, leave=False):
+    for batch in tqdm(loader, leave=False, ascii=True):
         images = batch["image"].to(device, non_blocking=True)
-        appearance_idx = batch["appearance_idx"].to(device, non_blocking=True)
+        variant_idx = batch["variant_idx"].to(device, non_blocking=True)
         rarity_idx = batch["rarity_idx"].to(device, non_blocking=True)
+        if images.dim() == 5:
+            batch_size, views, channels, height, width = images.shape
+            images = images.reshape(batch_size * views, channels, height, width)
+            variant_idx = variant_idx.repeat_interleave(views)
+            rarity_idx = rarity_idx.repeat_interleave(views)
         if is_train:
             optimizer.zero_grad(set_to_none=True)
 
         with torch.set_grad_enabled(is_train):
-            with autocast(enabled=use_amp):
-                _, class_logits, rarity_logits = model(images)
-                loss = ce(class_logits, appearance_idx)
+            with autocast(device_type=device.type, enabled=use_amp):
+                embedding, class_logits, rarity_logits = model(images, variant_idx if is_train else None)
+                loss = ce(class_logits, variant_idx)
                 if rarity_weight > 0 and rarity_logits.shape[1] > 0:
                     valid = rarity_idx.ge(0)
                     if valid.any():
                         loss = loss + rarity_weight * ce(rarity_logits[valid], rarity_idx[valid])
+                if is_train and contrastive_weight > 0:
+                    loss = loss + contrastive_weight * supervised_contrastive_loss(
+                        embedding,
+                        variant_idx,
+                        contrastive_temperature,
+                    )
+                if is_train and hard_negative_weight > 0:
+                    loss = loss + hard_negative_weight * batch_hard_cosine_loss(
+                        embedding,
+                        variant_idx,
+                        hard_negative_margin,
+                    )
+                if is_train and logit_gap_weight > 0:
+                    score_logits_for_loss = model.classify(embedding, None)
+                    loss = loss + logit_gap_weight * target_logit_gap_loss(
+                        score_logits_for_loss,
+                        variant_idx,
+                        model.metric_output_scale,
+                        logit_gap_margin,
+                    )
+
+            with torch.no_grad():
+                with autocast(device_type=device.type, enabled=use_amp):
+                    score_logits = model.classify(embedding.detach(), None)
 
             if is_train:
                 assert scaler is not None
@@ -80,12 +184,15 @@ def run_epoch(
                 scaler.update()
 
         total_loss += float(loss.detach().cpu()) * images.shape[0]
-        total_correct += int(class_logits.argmax(dim=1).eq(appearance_idx).sum().detach().cpu())
+        total_correct += int(score_logits.argmax(dim=1).eq(variant_idx).sum().detach().cpu())
         total_count += int(images.shape[0])
+        margins.extend(top1_margins(score_logits, model.metric_output_scale))
 
     return {
         "loss": total_loss / max(1, total_count),
         "top1": total_correct / max(1, total_count),
+        "margin_mean": float(np.mean(margins)) if margins else 0.0,
+        "margin_p10": float(np.percentile(margins, 10)) if margins else 0.0,
     }
 
 
@@ -115,34 +222,42 @@ def train_main(config_path: str | Path) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_cfg = cfg.get("model", {})
     model = AvatarNet(
-        num_appearances=len(mappings["appearance_to_idx"]),
+        num_appearances=len(mappings["variant_to_idx"]),
         num_rarities=len(mappings["rarity_to_idx"]) if model_cfg.get("rarity_head", True) else 0,
         embedding_dim=int(model_cfg.get("embedding_dim", 64)),
         base_channels=int(model_cfg.get("base_channels", 32)),
         dropout=float(model_cfg.get("dropout", 0.1)),
+        metric_head=model_cfg.get("metric_head"),
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(cfg["train"].get("learning_rate", 1e-3)),
         weight_decay=float(cfg["train"].get("weight_decay", 1e-4)),
     )
-    scaler = GradScaler(enabled=device.type == "cuda" and bool(cfg["train"].get("mixed_precision", True)))
+    scaler = GradScaler(device.type, enabled=device.type == "cuda" and bool(cfg["train"].get("mixed_precision", True)))
     save_dir = project_path(cfg, cfg["train"].get("save_dir", "outputs/checkpoints"))
     best_top1 = -1.0
+    best_margin_p10 = float("-inf")
 
     print(f"设备={device}")
-    print(f"外观数量={len(mappings['appearance_to_idx'])} 稀有度数量={len(mappings['rarity_to_idx'])}")
+    print(f"变体数量={len(mappings['variant_to_idx'])} 外观数量={len(mappings['appearance_to_idx'])} 稀有度数量={len(mappings['rarity_to_idx'])}")
     for epoch in range(1, int(cfg["train"].get("epochs", 80)) + 1):
         train_metrics = run_epoch(model, train_loader, device, optimizer, scaler, cfg)
         val_metrics = run_epoch(model, val_loader, device, None, None, cfg)
         print(
             f"轮次={epoch} "
             f"训练损失={train_metrics['loss']:.4f} 训练top1={train_metrics['top1']:.4f} "
-            f"验证损失={val_metrics['loss']:.4f} 验证top1={val_metrics['top1']:.4f}"
+            f"训练间隔P10={train_metrics['margin_p10']:.4f} "
+            f"验证损失={val_metrics['loss']:.4f} 验证top1={val_metrics['top1']:.4f} "
+            f"验证间隔均值={val_metrics['margin_mean']:.4f} 验证间隔P10={val_metrics['margin_p10']:.4f}"
         )
         save_checkpoint(save_dir / "last.pt", model, mappings, cfg, epoch, val_metrics)
-        if val_metrics["top1"] >= best_top1:
+        is_better = val_metrics["top1"] > best_top1 or (
+            val_metrics["top1"] == best_top1 and val_metrics["margin_p10"] >= best_margin_p10
+        )
+        if is_better:
             best_top1 = val_metrics["top1"]
+            best_margin_p10 = val_metrics["margin_p10"]
             save_checkpoint(save_dir / "best.pt", model, mappings, cfg, epoch, val_metrics)
             (save_dir / "mappings.json").write_text(json.dumps(mappings, indent=2), encoding="utf-8")
 

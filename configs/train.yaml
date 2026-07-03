@@ -1,50 +1,86 @@
 project_root: "."
 
 data:
-  labels_csv: "data/labels.csv"
+  labels_csv: "data/generated/labels.csv"
   real_val_csv: "data/real_val.csv"
   image_size: [115, 115]
   num_workers: 0
   synthetic_val_uses_all_labels: true
 
 model:
-  embedding_dim: 64
-  base_channels: 32
-  dropout: 0.1
-  rarity_head: true
+  embedding_dim: 256
+  base_channels: 80
+  dropout: 0.02
+  rarity_head: false
+  metric_head:
+    enabled: true
+    type: "cosface"
+    scale: 48.0
+    margin: 0.45
+
+compose:
+  avatar_scale: 1.0
+  avatar_offset: [0, 0]
+  element_offset: [7, 7]
+  element_jitter_px: 2
+  training_icon:
+    enabled: true
+    paths:
+      - ""
+      - "assets/overlays/training/UI_TrainingGuide_Promote.png"
+      - "assets/overlays/training/UI_TrainingGuide_Finish.png"
+    inference_path: ""
+    scale: 1.5
+    scale_range: [1.42, 1.58]
+    jitter_px: 2
 
 train:
   seed: 42
-  epochs: 80
-  batch_size: 64
-  learning_rate: 0.001
+  epochs: 180
+  batch_size: 48
+  views_per_sample: 3
+  learning_rate: 0.0005
   weight_decay: 0.0001
-  rarity_loss_weight: 0.2
+  rarity_loss_weight: 0.0
+  contrastive_loss_weight: 0.15
+  contrastive_temperature: 0.07
+  hard_negative_loss_weight: 0.35
+  hard_negative_margin: 0.12
+  logit_gap_loss_weight: 0.15
+  logit_gap_margin: 0.10
   mixed_precision: true
   save_dir: "outputs/checkpoints"
 
 augment:
-  scale_range: [0.92, 1.08]
-  translate_px: 5
+  scale_range: [0.96, 1.04]
+  translate_px: 3
   hue_shift: 0.03
   saturation: 0.12
   brightness: 0.12
   contrast: 0.12
   gamma: [0.92, 1.08]
+  background_drift:
+    hue_shift: 0.05
+    saturation: 0.20
+    brightness: 0.18
+    contrast: 0.14
+    gamma: [0.88, 1.12]
   noise_std: 3.0
   blur_probability: 0.15
   sharpen_probability: 0.15
   jpeg_probability: 0.15
 
 mask:
-  enabled: true
+  enabled: false
   grid: 4
   corners: ["top_left", "top_right", "bottom_right"]
+  train_corners: ["top_left", "top_right", "bottom_right"]
+  inference_corners: ["top_left", "top_right"]
   inference_weight: 0.2
-  train_weight_range: [0.0, 0.4]
+  train_weight_range: [0.25, 0.55]
 
 prototype:
-  samples_per_appearance: 32
+  samples_per_appearance: 128
   output_csv: "outputs/prototypes.csv"
 
 export:
@@ -54,4 +90,3 @@ export:
 normalization:
   mean: [0.5, 0.5, 0.5]
   std: [0.5, 0.5, 0.5]
-

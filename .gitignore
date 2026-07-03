@@ -4,13 +4,22 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
-data/avatars/
-data/backgrounds/
-data/real_val/
 outputs/
+temp/
+test/
+data/real_val/
+data/real_val.csv
+data/generated/*.csv
+
+*.log
 *.pt
 *.pth
 *.onnx
 *.csv
-!data/labels.example.csv
-!data/real_val.example.csv
+
+# 本地训练素材，不随代码仓库提交。
+assets/**/*.png
+
+!assets/**/.gitkeep
+!data/generated/.gitkeep
+!data/metadata/**/.gitkeep
