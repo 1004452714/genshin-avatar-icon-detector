@@ -17,9 +17,9 @@ assets/
     UI_AvatarIcon/    角色透明头像或皮肤图（^UI_AvatarIcon_[^_]+$）
     UI_Buff_Element/  左上角元素图标（UI_Buff_Element_.*?）
   backgrounds/
-    UI_QUALITY/       稀有度背景图（UI_QUALITY_.*?）
+    UI_QUALITY/       可选稀有度背景图（UI_QUALITY_.*?）
   overlays/
-    training/   右下角养成进度图标（UI_TrainingGuide.*?）
+    training/         可选右下角养成进度图标（UI_TrainingGuide.*?）
 
 data/
   metadata/
@@ -73,8 +73,8 @@ $env:PYTHONIOENCODING = "utf-8"
 1. 放置角色 JSON：`data/metadata/Avatar/*.json`。
 2. 放置角色头像 PNG：`assets/icons/UI_AvatarIcon/`。
 3. 放置元素图标 PNG：`assets/icons/UI_Buff_Element/`。
-4. 放置稀有度背景 PNG：`assets/backgrounds/UI_QUALITY/`。
-5. 可选放置养成进度图标：`assets/overlays/training/`。
+4. 可选放置稀有度背景 PNG：`assets/backgrounds/UI_QUALITY/`。默认训练不依赖背景 PNG，会对透明区域自动填色。
+5. 可选放置养成进度图标：`assets/overlays/training/`。默认配置关闭右下角养成图标。
 6. 菜单选择 `1. 准备数据`，或运行 `.\avatardetect.ps1 prepare`。
 7. 校验通过后，菜单选择 `2. 开始完整训练`，或运行 `.\avatardetect.ps1 train`。
 
@@ -82,7 +82,7 @@ $env:PYTHONIOENCODING = "utf-8"
 
 ```csv
 variant_id,character_id,character_name,skin_id,skin_name,element_type,weapon_type,rarity,image_path,element_icon_path,background_path,split
-10000002_200200_冰,10000002,神里绫华,200200,莹辉流华,冰,单手剑,5,assets/icons/UI_AvatarIcon/UI_AvatarIcon_Ayaka.png,assets/icons/UI_Buff_Element/UI_Buff_Element_Frost.png,assets/backgrounds/UI_QUALITY/UI_QUALITY_ORANGE.png,train
+10000002_200200_冰,10000002,神里绫华,200200,莹辉流华,冰,单手剑,5,assets/icons/UI_AvatarIcon/UI_AvatarIcon_Ayaka.png,assets/icons/UI_Buff_Element/UI_Buff_Element_Frost.png,,train
 ```
 
 保持 `variant_id` 和 `character_id` 稳定。`appearance_id` 在代码内部由 `character_id + "_" + skin_id` 派生，不写入生成 CSV。
@@ -144,12 +144,12 @@ variant_id,character_id,character_name,skin_id,skin_name,element_type,weapon_typ
 
 菜单中的每个步骤会执行以下操作：
 
-- `1. 准备数据`：生成 `data/generated/labels.csv`，检查 Python 语法，并按 `configs/train.yaml` 校验图片、背景、标签字段是否可用。对应命令：`.\avatardetect.ps1 prepare`。
+- `1. 准备数据`：生成 `data/generated/labels.csv`，检查 Python 语法，并按 `configs/train.yaml` 校验图片、可选背景、标签字段是否可用。对应命令：`.\avatardetect.ps1 prepare`。
 - `2. 开始完整训练`：先准备数据，再清理旧的全量训练产物，然后从头训练，最后生成 `outputs/prototypes.csv` 并导出 `outputs/avatar.onnx`。对应命令：`.\avatardetect.ps1 train`。
 - `3. 单图测试`：提示输入一张图片路径，使用 `outputs/avatar.onnx` 和 `outputs/prototypes.csv` 输出 TopK 识别结果。对应命令：`.\avatardetect.ps1 infer --image test\a.png`。
 - `4. 真实截图验证`：读取 `data/real_val.csv`，对真实裁剪图做批量验证。对应命令：`.\avatardetect.ps1 real-val`。
 - `5. 实机测试`：查找原神窗口，实时截图、定位候选头像区域、裁剪并识别；可在控制窗口调整 HSV、面积和裁剪参数。对应命令：`.\avatardetect.ps1 live`。
-- `6. 生成预览图`：根据当前 labels 和配置生成合成预览图到 `outputs/previews/`，用于检查头像、背景、元素和养成图标合成效果。对应命令：`.\avatardetect.ps1 preview`。
+- `6. 生成预览图`：根据当前 labels 和配置生成合成预览图到 `outputs/previews/`，用于检查头像、自动填色背景、元素和可选养成图标合成效果。对应命令：`.\avatardetect.ps1 preview`。
 - `7. 清理生成物`：删除生成物和缓存，包括 `outputs/`、`data/generated/labels.csv`、`temp/` 和 `__pycache__/`；不会删除 `assets/` 下的训练 PNG。对应命令：`.\avatardetect.ps1 clean`。
 
 高级命令：
@@ -165,4 +165,5 @@ variant_id,character_id,character_name,skin_id,skin_name,element_type,weapon_typ
 - `appearance_id` 不写入生成 CSV，由 `character_id` 和 `skin_id` 派生表示角色皮肤。
 - 推理时从 prototype 向量库映射回 `character_id`、`skin_name`、`element_type` 和 `weapon_type`。
 - `weapon_type` 由 Avatar JSON 的 `Weapon` 字段映射得到，只作为跟随角色的元数据保存，不作为额外训练目标。
-- 训练图会先在角色透明图原始画布上合成元素图标和可选养成图标，再整体缩放到 `115x115` 并叠加稀有度背景。
+- 默认训练图会先在角色透明图原始画布上合成左上角元素图标，再整体缩放到 `115x115`，并用随机纯色、渐变或噪声背景填充透明区域。
+- prototype 和验证默认使用按稀有度选择的纯色背景；如需恢复真实稀有度背景，可设置 `compose.use_background: true` 并提供 `background_path`。

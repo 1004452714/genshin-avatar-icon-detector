@@ -160,6 +160,56 @@ def random_degrade(image: np.ndarray, cfg: dict[str, Any], rng: np.random.Genera
     return out
 
 
+def _float_range(value: Any, default: tuple[float, float]) -> tuple[float, float]:
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return float(value[0]), float(value[1])
+    return default
+
+
+def random_background(size: tuple[int, int], cfg: dict[str, Any], rng: np.random.Generator) -> np.ndarray:
+    target_w, target_h = size
+    saturation_min, saturation_max = _float_range(cfg.get("saturation"), (0.05, 0.75))
+    value_min, value_max = _float_range(cfg.get("value"), (0.45, 0.95))
+    weights = np.asarray(
+        [
+            float(cfg.get("solid_weight", 0.4)),
+            float(cfg.get("gradient_weight", 0.35)),
+            float(cfg.get("noise_weight", 0.25)),
+        ],
+        dtype=np.float64,
+    )
+    if weights.sum() <= 0:
+        weights[:] = 1.0
+    weights = weights / weights.sum()
+    mode = int(rng.choice(3, p=weights))
+
+    hue = float(rng.uniform(0, 180))
+    saturation = float(rng.uniform(saturation_min, saturation_max)) * 255.0
+    value = float(rng.uniform(value_min, value_max)) * 255.0
+    hsv = np.zeros((target_h, target_w, 3), dtype=np.float32)
+    hsv[..., 0] = hue
+
+    if mode == 0:
+        hsv[..., 1] = saturation
+        hsv[..., 2] = value
+    elif mode == 1:
+        x = np.linspace(-1.0, 1.0, target_w, dtype=np.float32)[None, :]
+        y = np.linspace(-1.0, 1.0, target_h, dtype=np.float32)[:, None]
+        angle = float(rng.uniform(0, np.pi * 2.0))
+        grad = (np.cos(angle) * x + np.sin(angle) * y + 1.4) / 2.8
+        hsv[..., 0] = (hue + rng.uniform(-8.0, 8.0) * grad) % 180.0
+        hsv[..., 1] = np.clip(saturation * (0.65 + 0.55 * grad), 0, 255)
+        hsv[..., 2] = np.clip(value * (0.75 + 0.45 * grad), 0, 255)
+    else:
+        hsv[..., 0] = (hue + rng.normal(0.0, 10.0, (target_h, target_w))).astype(np.float32) % 180.0
+        hsv[..., 1] = np.clip(rng.normal(saturation, 25.0, (target_h, target_w)), 0, 255)
+        hsv[..., 2] = np.clip(rng.normal(value, 22.0, (target_h, target_w)), 0, 255)
+        hsv = cv2.GaussianBlur(hsv, (0, 0), sigmaX=float(rng.uniform(1.5, 5.0)))
+
+    hsv[..., 1:] = np.clip(hsv[..., 1:], 0, 255)
+    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+
+
 def solid_background(size: tuple[int, int], rarity: Any) -> np.ndarray:
     colors = {
         "4": (146, 92, 190),

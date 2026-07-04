@@ -23,13 +23,13 @@ model:
     margin: 0.45
 
 compose:
-  use_background: true
+  use_background: false
   avatar_scale: 1.0
   avatar_offset: [0, 0]
   element_offset: [7, 7]
   element_jitter_px: 2
   training_icon:
-    enabled: true
+    enabled: false
     paths:
       - ""
       - "assets/overlays/training/UI_TrainingGuide_Promote.png"
@@ -70,11 +70,14 @@ augment:
     brightness: 0.18
     contrast: 0.14
     gamma: [0.88, 1.12]
-  background_mix:
+  random_background:
     enabled: true
-    unpacked_probability: 0.70
-    randomized_probability: 0.20
-    dropout_probability: 0.10
+    probability: 0.70
+    solid_weight: 0.40
+    gradient_weight: 0.35
+    noise_weight: 0.25
+    saturation: [0.05, 0.75]
+    value: [0.45, 0.95]
   noise_std: 3.0
   blur_probability: 0.15
   sharpen_probability: 0.15

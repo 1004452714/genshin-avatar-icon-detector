@@ -10,6 +10,7 @@ from torch.utils.data import Dataset
 
 from .image_ops import (
     alpha_blend,
+    random_background,
     random_color_drift,
     random_degrade,
     read_rgb,
@@ -179,31 +180,32 @@ class AvatarDataset(Dataset):
             self._rgb_cache[key] = image
         return image
 
-    def sample_background_mode(self) -> str:
-        if not self.train or self.prototype:
-            return "unpacked"
-
-        mix_cfg = self.cfg.get("augment", {}).get("background_mix", {})
-        if not bool(mix_cfg.get("enabled", False)):
-            return "unpacked"
-
-        weights = np.asarray(
-            [
-                float(mix_cfg.get("unpacked_probability", 0.70)),
-                float(mix_cfg.get("randomized_probability", 0.20)),
-                float(mix_cfg.get("dropout_probability", 0.10)),
-            ],
-            dtype=np.float64,
-        )
-        if weights.sum() <= 0:
-            return "unpacked"
-        return str(self.rng.choice(["unpacked", "randomized", "dropout"], p=weights / weights.sum()))
-
     def load_background(self, row: pd.Series) -> np.ndarray:
         bg_path = resolve_data_path(self.root, row.get("background_path", ""))
         if bg_path and bg_path.exists():
             return resize_cover(self.read_rgb_cached(bg_path), self.size)
         return solid_background(self.size, row.get("rarity", ""))
+
+    def make_background(self, row: pd.Series) -> np.ndarray:
+        compose_cfg = self.cfg.get("compose", {})
+        augment_cfg = self.cfg.get("augment", {})
+        random_bg_cfg = augment_cfg.get("random_background", {})
+        use_random_background = (
+            self.train
+            and not self.prototype
+            and bool(random_bg_cfg.get("enabled", False))
+            and self.rng.random() < float(random_bg_cfg.get("probability", 0.0))
+        )
+        if use_random_background:
+            background = random_background(self.size, random_bg_cfg, self.rng)
+        elif bool(compose_cfg.get("use_background", False)):
+            background = self.load_background(row)
+        else:
+            background = solid_background(self.size, row.get("rarity", ""))
+
+        if self.train and not self.prototype and augment_cfg.get("background_drift"):
+            background = random_color_drift(background, augment_cfg["background_drift"], self.rng)
+        return background
 
     def compose_overlays(self, avatar: np.ndarray, row: pd.Series) -> np.ndarray:
         compose_cfg = self.cfg.get("compose", {})
@@ -267,14 +269,7 @@ class AvatarDataset(Dataset):
             raise FileNotFoundError(f"找不到角色图: {avatar_path}")
 
         compose_cfg = self.cfg.get("compose", {})
-        use_background = bool(compose_cfg.get("use_background", False))
-        background_mode = self.sample_background_mode() if use_background else "dropout"
-        if background_mode == "dropout":
-            background = np.zeros((self.size[1], self.size[0], 3), dtype=np.uint8)
-        else:
-            background = self.load_background(row)
-        if background_mode == "randomized" and augment_cfg.get("background_drift"):
-            background = random_color_drift(background, augment_cfg["background_drift"], self.rng)
+        background = self.make_background(row)
 
         avatar = self.compose_overlays(self.read_rgba_cached(avatar_path), row)
         avatar_base_scale = float(compose_cfg.get("avatar_scale", 1.0))
@@ -292,13 +287,10 @@ class AvatarDataset(Dataset):
             shift_y = base_shift_y
 
         foreground = resize_contain_rgba(avatar, self.size, scale, shift_x, shift_y)
-        visible_mask = foreground[..., 3:4] > 0
         image = alpha_blend(foreground, background)
         if self.train:
             image = random_color_drift(image, augment_cfg, self.rng)
             image = random_degrade(image, augment_cfg, self.rng)
-            if background_mode == "dropout":
-                image = np.where(visible_mask, image, 0).astype(np.uint8)
 
         mask_cfg = self.cfg.get("mask", {})
         if mask_cfg.get("enabled", True):
