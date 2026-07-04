@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 import pandas as pd
 import torch
@@ -61,12 +62,15 @@ def load_labels(path: str | Path) -> pd.DataFrame:
 def make_mappings(df: pd.DataFrame) -> dict[str, dict[str, int]]:
     variants = sorted(df["variant_id"].astype(str).unique())
     appearances = sorted(df["appearance_id"].astype(str).unique())
+    elements = sorted(str(x) for x in df["element_type"].astype(str).unique() if str(x))
     rarities = sorted(str(x) for x in df["rarity"].astype(str).unique() if str(x))
     return {
         "variant_to_idx": {name: i for i, name in enumerate(variants)},
         "idx_to_variant": {str(i): name for i, name in enumerate(variants)},
         "appearance_to_idx": {name: i for i, name in enumerate(appearances)},
         "idx_to_appearance": {str(i): name for i, name in enumerate(appearances)},
+        "element_to_idx": {name: i for i, name in enumerate(elements)},
+        "idx_to_element": {str(i): name for i, name in enumerate(elements)},
         "rarity_to_idx": {name: i for i, name in enumerate(rarities)},
         "idx_to_rarity": {str(i): name for i, name in enumerate(rarities)},
     }
@@ -130,20 +134,28 @@ class AvatarDataset(Dataset):
     def __getitem__(self, idx: int) -> dict[str, Any]:
         row = self.df.iloc[idx]
         if self.train and self.views_per_sample > 1:
-            tensors = [self.image_to_tensor(self.render_row(row)) for _ in range(self.views_per_sample)]
-            tensor = np.stack(tensors, axis=0)
+            rendered = [self.render_row(row) for _ in range(self.views_per_sample)]
+            tensor = np.stack([self.image_to_tensor(image) for image in rendered], axis=0)
+            element_tensor = np.stack([self.element_roi_to_tensor(image) for image in rendered], axis=0)
         else:
-            tensor = self.image_to_tensor(self.render_row(row))
+            rendered_image = self.render_row(row)
+            tensor = self.image_to_tensor(rendered_image)
+            element_tensor = self.element_roi_to_tensor(rendered_image)
 
         variant_id = str(row["variant_id"])
         appearance_id = str(row["appearance_id"])
+        element_type = str(row["element_type"])
         rarity = str(row["rarity"])
         rarity_idx = self.mappings["rarity_to_idx"].get(rarity, -1)
         variant_idx = self.mappings["variant_to_idx"][variant_id]
+        appearance_idx = self.mappings["appearance_to_idx"][appearance_id]
+        element_idx = self.mappings["element_to_idx"].get(element_type, -1)
         return {
             "image": torch.from_numpy(tensor).float(),
+            "element_image": torch.from_numpy(element_tensor).float(),
             "variant_idx": torch.tensor(variant_idx, dtype=torch.long),
-            "appearance_idx": torch.tensor(variant_idx, dtype=torch.long),
+            "appearance_idx": torch.tensor(appearance_idx, dtype=torch.long),
+            "element_idx": torch.tensor(element_idx, dtype=torch.long),
             "rarity_idx": torch.tensor(rarity_idx, dtype=torch.long),
             "variant_id": variant_id,
             "appearance_id": appearance_id,
@@ -154,6 +166,33 @@ class AvatarDataset(Dataset):
         tensor = image.astype(np.float32) / 255.0
         tensor = tensor.transpose(2, 0, 1)
         return (tensor - self.mean) / self.std
+
+    def crop_element_roi(self, image: np.ndarray) -> np.ndarray:
+        roi_cfg = self.cfg.get("element_roi", {})
+        x = int(roi_cfg.get("x", 0))
+        y = int(roi_cfg.get("y", 0))
+        size = int(roi_cfg.get("size", 48))
+        output_size = roi_cfg.get("output_size", [64, 64])
+        output_w = int(output_size[0]) if len(output_size) > 0 else 64
+        output_h = int(output_size[1]) if len(output_size) > 1 else output_w
+
+        h, w = image.shape[:2]
+        canvas = np.zeros((size, size, 3), dtype=np.uint8)
+        src_x1 = max(0, x)
+        src_y1 = max(0, y)
+        src_x2 = min(w, x + size)
+        src_y2 = min(h, y + size)
+        if src_x1 < src_x2 and src_y1 < src_y2:
+            dst_x1 = src_x1 - x
+            dst_y1 = src_y1 - y
+            dst_x2 = dst_x1 + (src_x2 - src_x1)
+            dst_y2 = dst_y1 + (src_y2 - src_y1)
+            canvas[dst_y1:dst_y2, dst_x1:dst_x2] = image[src_y1:src_y2, src_x1:src_x2]
+        interpolation = cv2.INTER_LINEAR if output_w > size or output_h > size else cv2.INTER_AREA
+        return cv2.resize(canvas, (output_w, output_h), interpolation=interpolation)
+
+    def element_roi_to_tensor(self, image: np.ndarray) -> np.ndarray:
+        return self.image_to_tensor(self.crop_element_roi(image))
 
     def jitter(self, max_abs_px: int) -> int:
         if max_abs_px <= 0 or not self.train or self.prototype:
@@ -214,6 +253,15 @@ class AvatarDataset(Dataset):
             raise FileNotFoundError(f"找不到元素图标: {element_path}")
 
         element_icon = self.read_rgba_cached(element_path)
+        if self.train and not self.prototype:
+            scale_range = compose_cfg.get("element_scale_range", [1.0, 1.0])
+            element_scale = float(self.rng.uniform(float(scale_range[0]), float(scale_range[1])))
+        else:
+            element_scale = float(compose_cfg.get("element_scale", 1.0))
+        if abs(element_scale - 1.0) > 1e-6:
+            new_w = max(1, int(round(element_icon.shape[1] * element_scale)))
+            new_h = max(1, int(round(element_icon.shape[0] * element_scale)))
+            element_icon = resize_rgba(element_icon, (new_w, new_h))
         element_offset = compose_cfg.get("element_offset", [7, 7])
         element_x = int(element_offset[0]) if len(element_offset) > 0 else 7
         element_y = int(element_offset[1]) if len(element_offset) > 1 else 7

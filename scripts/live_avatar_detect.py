@@ -20,7 +20,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from avatardetect.config import load_config  # noqa: E402
-from avatardetect.mask import apply_corner_soft_mask  # noqa: E402
+from avatardetect.infer import (  # noqa: E402
+    crop_element_roi,
+    element_probabilities_from_outputs,
+    image_to_tensor,
+    preprocess_rgb_array,
+    rank_with_element_head,
+)
 
 
 TARGET_TITLES = ("原神", "Genshin Impact")
@@ -126,26 +132,12 @@ def capture_client(hwnd: int) -> np.ndarray | None:
 
 
 def preprocess_rgb(image_rgb: np.ndarray, cfg: dict) -> np.ndarray:
-    image_size = cfg["data"].get("image_size", [115, 115])
-    width, height = int(image_size[0]), int(image_size[1])
-    image = cv2.resize(image_rgb, (width, height), interpolation=cv2.INTER_AREA)
-    mask_cfg = cfg.get("mask", {})
-    if mask_cfg.get("enabled", True):
-        image = apply_corner_soft_mask(
-            image,
-            grid=int(mask_cfg.get("grid", 4)),
-            corners=mask_cfg.get(
-                "inference_corners",
-                mask_cfg.get("corners", ["top_left", "top_right", "bottom_right"]),
-            ),
-            weight=float(mask_cfg.get("inference_weight", 0.2)),
-        )
-    tensor = image.astype(np.float32) / 255.0
-    tensor = tensor.transpose(2, 0, 1)
-    norm = cfg.get("normalization", {})
-    mean = np.asarray(norm.get("mean", [0.5, 0.5, 0.5]), dtype=np.float32).reshape(3, 1, 1)
-    std = np.asarray(norm.get("std", [0.5, 0.5, 0.5]), dtype=np.float32).reshape(3, 1, 1)
-    return ((tensor - mean) / std)[None, ...].astype(np.float32)
+    return image_to_tensor(preprocess_rgb_array(image_rgb, cfg), cfg)
+
+
+def preprocess_element_rgb(image_rgb: np.ndarray, cfg: dict) -> np.ndarray:
+    image = preprocess_rgb_array(image_rgb, cfg)
+    return image_to_tensor(crop_element_roi(image, cfg), cfg)
 
 
 def decode_vector(text: str) -> np.ndarray:
@@ -416,17 +408,21 @@ def classify_crop(
     crop_rgb: np.ndarray,
     cfg: dict,
     session: ort.InferenceSession,
-    input_name: str,
+    input_names: list[str],
     prototypes: pd.DataFrame,
     matrix: np.ndarray,
     top_k: int,
 ) -> list[tuple[pd.Series, float]]:
-    outputs = session.run(None, {input_name: preprocess_rgb(crop_rgb, cfg)})
+    feed = {input_names[0]: preprocess_rgb(crop_rgb, cfg)}
+    if len(input_names) > 1:
+        feed[input_names[1]] = preprocess_element_rgb(crop_rgb, cfg)
+    outputs = session.run(None, feed)
     embedding = outputs[0][0].astype(np.float32)
     embedding = embedding / max(np.linalg.norm(embedding), 1e-12)
     scores = matrix @ embedding
-    order = np.argsort(-scores)[: max(1, int(top_k))]
-    return [(prototypes.iloc[int(idx)], float(scores[int(idx)])) for idx in order]
+    element_probs, predicted_element = element_probabilities_from_outputs(outputs, prototypes)
+    element_min_probability = float(cfg.get("inference", {}).get("element_min_probability", 0.35))
+    return rank_with_element_head(prototypes, scores, top_k, element_probs, predicted_element, element_min_probability)
 
 
 def avatar_label_lines(rows: list[tuple[pd.Series, float]]) -> list[str]:
@@ -481,7 +477,7 @@ def print_top5_snapshot(
     crop_offset_y: int,
     cfg: dict,
     session: ort.InferenceSession,
-    input_name: str,
+    input_names: list[str],
     prototypes: pd.DataFrame,
     matrix: np.ndarray,
 ) -> None:
@@ -509,7 +505,7 @@ def print_top5_snapshot(
             print(f"Rect{rect_index}: skip invalid_crop_shape hsv=({x},{y},{w},{h}) area={area}")
             continue
 
-        top_rows = classify_crop(crop_rgb, cfg, session, input_name, prototypes, matrix, 5)
+        top_rows = classify_crop(crop_rgb, cfg, session, input_names, prototypes, matrix, 5)
         valid_count += 1
         gap = top_rows[0][1] - top_rows[1][1] if len(top_rows) > 1 else 0.0
         print(f"Rect{rect_index}: hsv=({x},{y},{w},{h}) area={area} crop=({crop_x1},{crop_y1},{crop_w},{crop_h}) gap={gap:.4f}")
@@ -533,7 +529,7 @@ def save_crops_snapshot(
     crop_offset_y: int,
     cfg: dict,
     session: ort.InferenceSession,
-    input_name: str,
+    input_names: list[str],
     prototypes: pd.DataFrame,
     matrix: np.ndarray,
     save_dir: Path,
@@ -560,7 +556,7 @@ def save_crops_snapshot(
         if crop_rgb.shape[:2] != (crop_h, crop_w):
             continue
 
-        top_rows = classify_crop(crop_rgb, cfg, session, input_name, prototypes, matrix, top_k)
+        top_rows = classify_crop(crop_rgb, cfg, session, input_names, prototypes, matrix, top_k)
         if not top_rows:
             continue
         row, score = top_rows[0]
@@ -612,7 +608,7 @@ def main() -> int:
     cfg = load_config(args.config)
     providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if args.provider == "cuda" else ["CPUExecutionProvider"]
     session = ort.InferenceSession(str(model_path), providers=providers)
-    input_name = session.get_inputs()[0].name
+    input_names = [item.name for item in session.get_inputs()]
     prototypes, matrix = load_prototypes(prototypes_path)
     font = load_font(18)
 
@@ -656,9 +652,9 @@ def main() -> int:
                 height, width = frame_rgb.shape[:2]
 
                 if ui.consume_test_request():
-                    print_top5_snapshot(frame_rgb, rects, crop_w, crop_h, crop_offset_x, crop_offset_y, cfg, session, input_name, prototypes, matrix)
+                    print_top5_snapshot(frame_rgb, rects, crop_w, crop_h, crop_offset_x, crop_offset_y, cfg, session, input_names, prototypes, matrix)
                 if ui.consume_save_request():
-                    save_crops_snapshot(frame_rgb, rects, crop_w, crop_h, crop_offset_x, crop_offset_y, cfg, session, input_name, prototypes, matrix, save_dir, args.top_k)
+                    save_crops_snapshot(frame_rgb, rects, crop_w, crop_h, crop_offset_x, crop_offset_y, cfg, session, input_names, prototypes, matrix, save_dir, args.top_k)
 
                 cache_cutoff = now - CACHE_TTL_SECONDS * 3
                 result_cache = {key: value for key, value in result_cache.items() if value[0] >= cache_cutoff}
@@ -690,7 +686,7 @@ def main() -> int:
                     if cached is not None and now - cached[0] <= CACHE_TTL_SECONDS:
                         top_rows = cached[1]
                     else:
-                        top_rows = classify_crop(crop_rgb, cfg, session, input_name, prototypes, matrix, args.top_k)
+                        top_rows = classify_crop(crop_rgb, cfg, session, input_names, prototypes, matrix, args.top_k)
                         result_cache[cache_key] = (now, top_rows)
                     if display_options["Show crop rect"]:
                         cv2.rectangle(preview, (crop_x1, crop_y1), (crop_x2, crop_y2), (0, 255, 0), 2)

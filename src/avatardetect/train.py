@@ -138,9 +138,12 @@ def run_epoch(
     ce = nn.CrossEntropyLoss()
     total_loss = 0.0
     total_correct = 0
+    total_element_correct = 0
+    total_element_count = 0
     total_count = 0
     margins: list[float] = []
     rarity_weight = float(cfg["train"].get("rarity_loss_weight", 0.0))
+    element_weight = float(cfg["train"].get("element_loss_weight", 0.0))
     contrastive_weight = float(cfg["train"].get("contrastive_loss_weight", 0.0))
     contrastive_temperature = float(cfg["train"].get("contrastive_temperature", 0.07))
     hard_negative_weight = float(cfg["train"].get("hard_negative_loss_weight", 0.0))
@@ -151,24 +154,37 @@ def run_epoch(
 
     for batch in tqdm(loader, leave=False, ascii=True):
         images = batch["image"].to(device, non_blocking=True)
+        element_images = batch["element_image"].to(device, non_blocking=True)
         variant_idx = batch["variant_idx"].to(device, non_blocking=True)
+        element_idx = batch["element_idx"].to(device, non_blocking=True)
         rarity_idx = batch["rarity_idx"].to(device, non_blocking=True)
         if images.dim() == 5:
             batch_size, views, channels, height, width = images.shape
             images = images.reshape(batch_size * views, channels, height, width)
+            _, _, element_channels, element_height, element_width = element_images.shape
+            element_images = element_images.reshape(batch_size * views, element_channels, element_height, element_width)
             variant_idx = variant_idx.repeat_interleave(views)
+            element_idx = element_idx.repeat_interleave(views)
             rarity_idx = rarity_idx.repeat_interleave(views)
         if is_train:
             optimizer.zero_grad(set_to_none=True)
 
         with torch.set_grad_enabled(is_train):
             with autocast(device_type=device.type, enabled=use_amp):
-                embedding, class_logits, rarity_logits = model(images, variant_idx if is_train else None)
+                embedding, class_logits, rarity_logits, element_logits = model(
+                    images,
+                    element_images,
+                    variant_idx if is_train else None,
+                )
                 loss = ce(class_logits, variant_idx)
                 if rarity_weight > 0 and rarity_logits.shape[1] > 0:
                     valid = rarity_idx.ge(0)
                     if valid.any():
                         loss = loss + rarity_weight * ce(rarity_logits[valid], rarity_idx[valid])
+                if element_weight > 0 and element_logits.shape[1] > 0:
+                    valid = element_idx.ge(0)
+                    if valid.any():
+                        loss = loss + element_weight * ce(element_logits[valid], element_idx[valid])
                 if is_train and contrastive_weight > 0:
                     loss = loss + contrastive_weight * supervised_contrastive_loss(
                         embedding,
@@ -202,12 +218,20 @@ def run_epoch(
 
         total_loss += float(loss.detach().cpu()) * images.shape[0]
         total_correct += int(score_logits.argmax(dim=1).eq(variant_idx).sum().detach().cpu())
+        if element_logits.shape[1] > 0:
+            valid_element = element_idx.ge(0)
+            if valid_element.any():
+                total_element_correct += int(
+                    element_logits.argmax(dim=1)[valid_element].eq(element_idx[valid_element]).sum().detach().cpu()
+                )
+                total_element_count += int(valid_element.sum().detach().cpu())
         total_count += int(images.shape[0])
         margins.extend(top1_margins(score_logits, model.metric_output_scale))
 
     return {
         "loss": total_loss / max(1, total_count),
         "top1": total_correct / max(1, total_count),
+        "element_top1": total_element_correct / max(1, total_element_count),
         "margin_mean": float(np.mean(margins)) if margins else 0.0,
         "margin_p10": float(np.percentile(margins, 10)) if margins else 0.0,
     }
@@ -243,6 +267,7 @@ def train_main(config_path: str | Path) -> None:
     model = AvatarNet(
         num_appearances=len(mappings["variant_to_idx"]),
         num_rarities=len(mappings["rarity_to_idx"]) if model_cfg.get("rarity_head", True) else 0,
+        num_elements=len(mappings.get("element_to_idx", {})),
         embedding_dim=int(model_cfg.get("embedding_dim", 64)),
         base_channels=int(model_cfg.get("base_channels", 32)),
         dropout=float(model_cfg.get("dropout", 0.1)),
@@ -266,8 +291,10 @@ def train_main(config_path: str | Path) -> None:
         print(
             f"轮次={epoch} "
             f"训练损失={train_metrics['loss']:.4f} 训练top1={train_metrics['top1']:.4f} "
+            f"训练元素top1={train_metrics['element_top1']:.4f} "
             f"训练间隔P10={train_metrics['margin_p10']:.4f} "
             f"验证损失={val_metrics['loss']:.4f} 验证top1={val_metrics['top1']:.4f} "
+            f"验证元素top1={val_metrics['element_top1']:.4f} "
             f"验证间隔均值={val_metrics['margin_mean']:.4f} 验证间隔P10={val_metrics['margin_p10']:.4f}"
         )
         save_checkpoint(save_dir / "last.pt", model, mappings, cfg, epoch, val_metrics)

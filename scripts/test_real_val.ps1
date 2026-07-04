@@ -62,7 +62,12 @@ import onnxruntime as ort
 import pandas as pd
 
 from avatardetect.config import load_config
-from avatardetect.infer import decode_vector, preprocess_image
+from avatardetect.infer import (
+    decode_vector,
+    element_probabilities_from_outputs,
+    preprocess_inputs,
+    rank_with_element_head,
+)
 
 
 def appearance_id_from_row(row: pd.Series) -> str:
@@ -85,7 +90,7 @@ def main() -> int:
     cfg = load_config(args.config)
     providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if args.provider == "cuda" else ["CPUExecutionProvider"]
     session = ort.InferenceSession(args.model, providers=providers)
-    input_name = session.get_inputs()[0].name
+    input_names = [item.name for item in session.get_inputs()]
 
     real = pd.read_csv(args.real_val, dtype=str).fillna("")
     protos = pd.read_csv(args.prototypes, dtype=str).fillna("")
@@ -97,16 +102,27 @@ def main() -> int:
     scores_top1 = []
 
     for sample_index, row in real.iterrows():
-        image = preprocess_image(row["image_path"], cfg)
-        embedding = session.run(None, {input_name: image})[0][0].astype(np.float32)
+        image, element_image = preprocess_inputs(row["image_path"], cfg)
+        feed = {input_names[0]: image}
+        if len(input_names) > 1:
+            feed[input_names[1]] = element_image
+        outputs = session.run(None, feed)
+        embedding = outputs[0][0].astype(np.float32)
         embedding = embedding / max(np.linalg.norm(embedding), 1e-12)
         scores = matrix @ embedding
-        order = np.argsort(-scores)
-        best_idx = int(order[0])
-        second_idx = int(order[1]) if len(order) > 1 else best_idx
-        pred = protos.iloc[best_idx]
-        score = float(scores[best_idx])
-        gap = float(scores[best_idx] - scores[second_idx]) if len(order) > 1 else 0.0
+        element_probs, predicted_element = element_probabilities_from_outputs(outputs, protos)
+        element_min_probability = float(cfg.get("inference", {}).get("element_min_probability", 0.35))
+        ranked_rows = rank_with_element_head(
+            protos,
+            scores,
+            args.top_k,
+            element_probs,
+            predicted_element,
+            element_min_probability,
+        )
+        pred, score = ranked_rows[0]
+        second_score = ranked_rows[1][1] if len(ranked_rows) > 1 else score
+        gap = float(score - second_score)
         expected_variant_id = str(row.get("expected_variant_id", "") or "")
         expected_appearance_id = str(row.get("expected_appearance_id", "") or "")
         pred_appearance_id = appearance_id_from_row(pred)
@@ -125,9 +141,7 @@ def main() -> int:
         print(f"{Path(row['image_path']).name}\t\u671f\u671b={expected_text}\t{'OK' if ok else 'MISS'}")
 
         candidates = []
-        for rank, candidate_idx in enumerate(order[: max(1, args.top_k)], start=1):
-            candidate = protos.iloc[int(candidate_idx)]
-            candidate_score = float(scores[int(candidate_idx)])
+        for rank, (candidate, candidate_score) in enumerate(ranked_rows, start=1):
             candidate_skin_name = candidate.get("skin_name", "")
             candidate_appearance_id = appearance_id_from_row(candidate)
             candidate_variant_id = candidate.get("variant_id", candidate_appearance_id)

@@ -35,7 +35,8 @@ def build_prototypes(config_path: str | Path, checkpoint_path: str | Path, out_p
             for _ in range(max(1, samples)):
                 item = dataset[0]
                 image = item["image"].unsqueeze(0).to(device)
-                embedding, _, _ = model(image)
+                element_image = item["element_image"].unsqueeze(0).to(device)
+                embedding, _, _, _ = model(image, element_image)
                 vectors.append(embedding.squeeze(0).detach().cpu().numpy())
         proto = np.mean(np.stack(vectors), axis=0)
         proto = proto / max(np.linalg.norm(proto), 1e-12)

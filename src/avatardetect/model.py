@@ -21,6 +21,7 @@ class AvatarNet(nn.Module):
         self,
         num_appearances: int,
         num_rarities: int,
+        num_elements: int = 0,
         embedding_dim: int = 64,
         base_channels: int = 32,
         dropout: float = 0.1,
@@ -50,6 +51,21 @@ class AvatarNet(nn.Module):
         )
         self.classifier = nn.Linear(embedding_dim, num_appearances, bias=not self.metric_head_enabled)
         self.rarity_head = nn.Linear(embedding_dim, num_rarities) if num_rarities > 0 else None
+        element_channels = max(16, c // 2)
+        element_dim = max(32, embedding_dim // 2)
+        self.element_features = nn.Sequential(
+            ConvBlock(3, element_channels, stride=2),
+            ConvBlock(element_channels, element_channels * 2, stride=2),
+            ConvBlock(element_channels * 2, element_channels * 4, stride=2),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+        )
+        self.element_embedding = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(element_channels * 4, element_dim),
+            nn.ReLU(inplace=True),
+        )
+        self.element_head = nn.Linear(element_dim, num_elements) if num_elements > 0 else None
 
     def classify(self, embedding: torch.Tensor, targets: torch.Tensor | None = None) -> torch.Tensor:
         if not self.metric_head_enabled:
@@ -68,8 +84,9 @@ class AvatarNet(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
+        element_x: torch.Tensor | None = None,
         targets: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         features = self.features(x)
         embedding = F.normalize(self.embedding(features), dim=1)
         class_logits = self.classify(embedding, targets)
@@ -77,7 +94,15 @@ class AvatarNet(nn.Module):
             rarity_logits = embedding.new_zeros((embedding.shape[0], 0))
         else:
             rarity_logits = self.rarity_head(embedding)
-        return embedding, class_logits, rarity_logits
+        if self.element_head is None:
+            element_logits = embedding.new_zeros((embedding.shape[0], 0))
+        else:
+            if element_x is None:
+                element_x = x
+            element_features = self.element_features(element_x)
+            element_embedding = self.element_embedding(element_features)
+            element_logits = self.element_head(element_embedding)
+        return embedding, class_logits, rarity_logits, element_logits
 
 
 class OnnxAvatarWrapper(nn.Module):
@@ -85,6 +110,6 @@ class OnnxAvatarWrapper(nn.Module):
         super().__init__()
         self.model = model
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        embedding, _, rarity_logits = self.model(x)
-        return embedding, rarity_logits
+    def forward(self, x: torch.Tensor, element_x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        embedding, _, rarity_logits, element_logits = self.model(x, element_x)
+        return embedding, rarity_logits, element_logits

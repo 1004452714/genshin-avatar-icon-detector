@@ -17,6 +17,7 @@ def load_model_from_checkpoint(path: str | Path, device: torch.device) -> tuple[
     model = AvatarNet(
         num_appearances=len(class_mapping),
         num_rarities=len(mappings["rarity_to_idx"]) if model_cfg.get("rarity_head", True) else 0,
+        num_elements=len(mappings.get("element_to_idx", {})),
         embedding_dim=int(model_cfg.get("embedding_dim", 64)),
         base_channels=int(model_cfg.get("base_channels", 32)),
         dropout=float(model_cfg.get("dropout", 0.1)),

@@ -27,7 +27,9 @@ compose:
   avatar_scale: 1.0
   avatar_offset: [0, 0]
   element_offset: [7, 7]
-  element_jitter_px: 2
+  element_jitter_px: 5
+  element_scale: 1.0
+  element_scale_range: [0.88, 1.16]
   training_icon:
     enabled: false
     paths:
@@ -39,6 +41,12 @@ compose:
     scale_range: [1.42, 1.58]
     jitter_px: 2
 
+element_roi:
+  x: 0
+  y: 0
+  size: 48
+  output_size: [64, 64]
+
 train:
   seed: 42
   epochs: 180
@@ -47,6 +55,7 @@ train:
   learning_rate: 0.0005
   weight_decay: 0.0001
   rarity_loss_weight: 0.0
+  element_loss_weight: 1.0
   contrastive_loss_weight: 0.15
   contrastive_temperature: 0.07
   hard_negative_loss_weight: 0.35
@@ -99,6 +108,9 @@ prototype:
 export:
   onnx_path: "outputs/avatar.onnx"
   opset: 17
+
+inference:
+  element_min_probability: 0.35
 
 normalization:
   mean: [0.5, 0.5, 0.5]
