@@ -1,0 +1,14 @@
+{
+  "Id": 10000117,
+  "Icon": "UI_AvatarIcon_MannequinBoy",
+  "Name": "奇偶·男性",
+  "Quality": 105,
+  "Weapon": 1,
+  "Costumes": [
+    {
+      "Id": 211700,
+      "Name": "奇偶·男性",
+      "IsDefault": true
+    }
+  ]
+}

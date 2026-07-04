@@ -76,11 +76,12 @@ def infer(
         appearance_id = appearance_id_from_row(row)
         variant_id = row.get("variant_id", appearance_id)
         element_type = row.get("element_type", "")
+        weapon_type = row.get("weapon_type", "")
         print(
             f"{rank}: 分数={scores[idx]:.4f} "
             f"character_id={row['character_id']} appearance_id={appearance_id} variant_id={variant_id} "
             f"名称={row['character_name']} skin_id={row['skin_id']} 皮肤={skin_name} "
-            f"元素={element_type} element_type={element_type}"
+            f"元素={element_type} element_type={element_type} 武器={weapon_type} weapon_type={weapon_type}"
         )
 
 

@@ -15,7 +15,6 @@ data/generated/*.csv
 *.pt
 *.pth
 *.onnx
-*.csv
 
 # 本地训练素材，不随代码仓库提交。
 assets/**/*.png

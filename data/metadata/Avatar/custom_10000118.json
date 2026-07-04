@@ -1,0 +1,14 @@
+{
+  "Id": 10000118,
+  "Icon": "UI_AvatarIcon_MannequinGirl",
+  "Name": "奇偶·女性",
+  "Quality": 105,
+  "Weapon": 1,
+  "Costumes": [
+    {
+      "Id": 211800,
+      "Name": "奇偶·女性",
+      "IsDefault": true
+    }
+  ]
+}

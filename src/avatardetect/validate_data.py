@@ -6,12 +6,13 @@ from pathlib import Path
 from PIL import Image
 
 from .config import load_config, project_path
-from .dataset import ALLOWED_ELEMENT_TYPES, load_labels, resolve_data_path
+from .dataset import ALLOWED_ELEMENT_TYPES, ALLOWED_WEAPON_TYPES, load_labels, resolve_data_path
 
 
 def validate_data(config_path: str | Path) -> None:
     cfg = load_config(config_path)
     root = Path(cfg["_project_root"])
+    use_background = bool(cfg.get("compose", {}).get("use_background", False))
     labels_path = project_path(cfg, cfg["data"]["labels_csv"])
     df = load_labels(labels_path)
     errors = []
@@ -21,11 +22,14 @@ def validate_data(config_path: str | Path) -> None:
         errors.append(f"variant_id 重复: {sorted(set(duplicated_variants))}")
     for i, row in df.iterrows():
         avatar_path = resolve_data_path(root, row["image_path"])
-        bg_path = resolve_data_path(root, row["background_path"])
+        bg_path = resolve_data_path(root, row.get("background_path", ""))
         element_path = resolve_data_path(root, row["element_icon_path"])
         element_type = str(row["element_type"])
+        weapon_type = str(row.get("weapon_type", ""))
         if element_type not in ALLOWED_ELEMENT_TYPES:
             errors.append(f"第 {i} 行: 未知元素类型: {element_type}")
+        if "weapon_type" in df.columns and weapon_type not in ALLOWED_WEAPON_TYPES:
+            errors.append(f"第 {i} 行: 未知武器类型: {weapon_type}")
         if avatar_path is None or not avatar_path.exists():
             errors.append(f"第 {i} 行: 找不到角色图: {avatar_path}")
         else:
@@ -44,7 +48,7 @@ def validate_data(config_path: str | Path) -> None:
                         warnings.append(f"第 {i} 行: 元素图标没有 alpha 通道: {element_path}")
             except Exception as exc:
                 errors.append(f"第 {i} 行: 无法读取元素图标 {element_path}: {exc}")
-        if bg_path is not None and not bg_path.exists():
+        if use_background and bg_path is not None and not bg_path.exists():
             errors.append(f"第 {i} 行: 找不到背景图: {bg_path}")
     print(f"行数={len(df)}")
     for warning in warnings:

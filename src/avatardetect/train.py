@@ -11,7 +11,7 @@ import torch
 from torch import nn
 from torch.amp import GradScaler, autocast
 from torch.nn import functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, get_worker_info
 from tqdm import tqdm
 
 from .config import load_config, project_path
@@ -26,6 +26,15 @@ def seed_everything(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
+def seed_worker(worker_id: int) -> None:
+    worker_seed = torch.initial_seed() % 2**32
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
+    worker_info = get_worker_info()
+    if worker_info is not None and hasattr(worker_info.dataset, "rng"):
+        worker_info.dataset.rng = np.random.default_rng(worker_seed)
+
+
 def build_loaders(cfg: dict[str, Any]) -> tuple[DataLoader, DataLoader, dict[str, dict[str, int]]]:
     root = Path(cfg["_project_root"])
     df = load_labels(project_path(cfg, cfg["data"]["labels_csv"]))
@@ -37,8 +46,16 @@ def build_loaders(cfg: dict[str, Any]) -> tuple[DataLoader, DataLoader, dict[str
     val_set = AvatarDataset(val_df, root, cfg, mappings, train=False, seed=seed + 1)
     batch_size = int(cfg["train"].get("batch_size", 64))
     num_workers = int(cfg["data"].get("num_workers", 0))
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    loader_kwargs: dict[str, Any] = {
+        "num_workers": num_workers,
+        "pin_memory": bool(cfg["data"].get("pin_memory", torch.cuda.is_available())),
+        "worker_init_fn": seed_worker if num_workers > 0 else None,
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = bool(cfg["data"].get("persistent_workers", True))
+        loader_kwargs["prefetch_factor"] = int(cfg["data"].get("prefetch_factor", 4))
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, **loader_kwargs)
+    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, **loader_kwargs)
     return train_loader, val_loader, mappings
 
 
@@ -218,6 +235,8 @@ def save_checkpoint(
 def train_main(config_path: str | Path) -> None:
     cfg = load_config(config_path)
     seed_everything(int(cfg["train"].get("seed", 42)))
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
     train_loader, val_loader, mappings = build_loaders(cfg)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_cfg = cfg.get("model", {})

@@ -49,7 +49,7 @@ def safe_remove(path: Path, allowed_roots: list[Path]) -> None:
 
 
 def command_prepare(args: argparse.Namespace) -> None:
-    run_step("生成 labels.csv", [sys.executable, "scripts/generate_labels.py"])
+    run_step("生成 labels.csv", [sys.executable, "scripts/generate_labels.py", "--config", args.config])
     run_step("语法检查", [sys.executable, "-m", "compileall", "-q", "scripts", "src", "avatardetect.py"])
     run_step("数据校验", [sys.executable, "scripts/validate_data.py", "--config", args.config])
 
@@ -203,6 +203,28 @@ def command_real_val(args: argparse.Namespace) -> None:
     )
 
 
+def command_live(args: argparse.Namespace) -> None:
+    command = [
+        sys.executable,
+        "scripts/live_avatar_detect.py",
+        "--config",
+        args.config,
+        "--model",
+        args.model,
+        "--prototypes",
+        args.prototypes,
+        "--provider",
+        args.provider,
+        "--fps",
+        str(args.fps),
+        "--top-k",
+        str(args.top_k),
+        "--save-dir",
+        args.save_dir,
+    ]
+    run_step("启动实机测试", command)
+
+
 def command_clean(_args: argparse.Namespace) -> None:
     print("==> 清理生成物")
     generated_roots = [ROOT / "outputs", ROOT / "data", ROOT / "temp"]
@@ -251,6 +273,12 @@ def build_parser() -> argparse.ArgumentParser:
     real_val.add_argument("--real-val", default=DEFAULT_REAL_VAL)
     real_val.set_defaults(func=command_real_val)
 
+    live = subparsers.add_parser("live", help="实机窗口测试")
+    add_common_model_args(live)
+    live.add_argument("--fps", type=float, default=30.0)
+    live.add_argument("--save-dir", default=str(ROOT / "temp" / "live_crops"))
+    live.set_defaults(func=command_live)
+
     preview = subparsers.add_parser("preview", help="生成合成预览图")
     preview.add_argument("--config", default=DEFAULT_CONFIG)
     preview.add_argument("--out-dir", default="outputs/previews")
@@ -291,8 +319,9 @@ def menu_loop() -> None:
         print("2. 开始完整训练")
         print("3. 单图测试")
         print("4. 真实截图验证")
-        print("5. 生成预览图")
-        print("6. 清理生成物")
+        print("5. 实机测试")
+        print("6. 生成预览图")
+        print("7. 清理生成物")
         print("0. 退出")
         choice = input("请选择: ").strip()
         try:
@@ -307,8 +336,10 @@ def menu_loop() -> None:
             elif choice == "4":
                 command_real_val(parser.parse_args(["real-val"]))
             elif choice == "5":
-                command_preview(parser.parse_args(["preview"]))
+                command_live(parser.parse_args(["live"]))
             elif choice == "6":
+                command_preview(parser.parse_args(["preview"]))
+            elif choice == "7":
                 confirm = input("确认清理 outputs、labels 和缓存？输入 y 确认: ").strip().lower()
                 if confirm == "y":
                     command_clean(parser.parse_args(["clean"]))

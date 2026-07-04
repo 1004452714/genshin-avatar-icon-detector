@@ -1,0 +1,20 @@
+{
+  "Id": 10000007,
+  "Icon": "UI_AvatarIcon_PlayerGirl",
+  "Name": "荧",
+  "Quality": 5,
+  "Weapon": 1,
+  "Costumes": [
+    {
+      "Id": 200700,
+      "Name": "初升之星",
+      "IsDefault": true
+    },
+    {
+      "Id": 200701,
+      "Name": "复地重天",
+      "IsDefault": false,
+      "FrontIcon": "UI_AvatarIcon_PlayerGirlCostumeCWXR"
+    }
+  ]
+}

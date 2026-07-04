@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .config import load_config
+
 
 FIELDNAMES = [
     "variant_id",
@@ -15,6 +17,7 @@ FIELDNAMES = [
     "skin_id",
     "skin_name",
     "element_type",
+    "weapon_type",
     "rarity",
     "image_path",
     "element_icon_path",
@@ -28,7 +31,7 @@ QUALITY_BACKGROUND = {
     "105": "UI_QUALITY_RED.png",
 }
 
-# 需要补充的角色优先放在 data/metadata/avatar_json/custom_*.json。
+# 需要补充的角色优先放在 data/metadata/Avatar/custom_*.json。
 MANUAL_LABELS: list[dict[str, str]] = []
 
 ELEMENT_ICON_BY_TYPE = {
@@ -39,6 +42,14 @@ ELEMENT_ICON_BY_TYPE = {
     "火": "UI_Buff_Element_Fire.png",
     "岩": "UI_Buff_Element_Roach.png",
     "草": "UI_Buff_Element_Grass.png",
+}
+
+WEAPON_TYPE_BY_ID = {
+    "1": "单手剑",
+    "10": "法器",
+    "11": "双手剑",
+    "12": "弓",
+    "13": "长柄武器",
 }
 
 VARIABLE_ELEMENT_CHARACTER_IDS = {
@@ -111,11 +122,13 @@ def build_row(
     avatar_dir: Path,
     element_dir: Path,
     background_dir: Path,
+    use_background: bool,
     character_id: str,
     character_name: str,
     skin_id: str,
     skin_name: str,
     element_type: str,
+    weapon_type: str,
     rarity: str,
     icon_name: str,
     split: str,
@@ -138,12 +151,15 @@ def build_row(
     if not element_icon_path.exists():
         raise FileNotFoundError(f"找不到元素={element_type} 对应的元素图标: {element_icon_path}")
 
-    background_name = QUALITY_BACKGROUND.get(rarity)
-    if not background_name:
-        raise ValueError(f"未配置 Quality={rarity} 的背景映射")
-    background_path = background_dir / background_name
-    if not background_path.exists():
-        raise FileNotFoundError(f"找不到 Quality={rarity} 对应的背景图: {background_path}")
+    background_path_text = ""
+    if use_background:
+        background_name = QUALITY_BACKGROUND.get(rarity)
+        if not background_name:
+            raise ValueError(f"未配置 Quality={rarity} 的背景映射")
+        background_path = background_dir / background_name
+        if not background_path.exists():
+            raise FileNotFoundError(f"找不到 Quality={rarity} 对应的背景图: {background_path}")
+        background_path_text = relative_for_csv(background_path, root)
 
     appearance_id = f"{character_id}_{skin_id}"
     return {
@@ -153,10 +169,11 @@ def build_row(
         "skin_id": skin_id,
         "skin_name": skin_name,
         "element_type": element_type,
+        "weapon_type": weapon_type,
         "rarity": rarity,
         "image_path": relative_for_csv(image_path, root),
         "element_icon_path": relative_for_csv(element_icon_path, root),
-        "background_path": relative_for_csv(background_path, root),
+        "background_path": background_path_text,
         "split": split,
     }, None
 
@@ -168,12 +185,15 @@ def rows_from_avatar_json(
     avatar_dir: Path,
     element_dir: Path,
     background_dir: Path,
+    use_background: bool,
     split: str,
 ) -> tuple[list[dict[str, str]], list[SkippedLabel], set[str]]:
     data = json.loads(json_path.read_text(encoding="utf-8"))
     character_id = as_text(get_value(data, "Id", "id"))
     character_name = as_text(get_value(data, "Name", "name"))
     rarity = as_text(get_value(data, "Quality", "quality"))
+    weapon_id = as_text(get_value(data, "Weapon", "weapon"))
+    weapon_type = WEAPON_TYPE_BY_ID.get(weapon_id)
     default_icon = as_text(get_value(data, "Icon", "icon"))
     fetter_info = get_value(data, "FetterInfo", "fetterInfo", "fetter_info", default={})
     if not isinstance(fetter_info, dict):
@@ -195,9 +215,9 @@ def rows_from_avatar_json(
         front_icon = as_text(get_value(costume, "FrontIcon", "frontIcon", "front_icon"))
         is_default = is_true(get_value(costume, "IsDefault", "isdefault", "isDefault", default=False))
 
-        if is_default and not front_icon:
+        if not front_icon and (is_default or len(costumes) == 1):
             icon_name = default_icon
-        elif not is_default and front_icon:
+        elif front_icon:
             icon_name = front_icon
         else:
             continue
@@ -212,10 +232,12 @@ def rows_from_avatar_json(
         else:
             element_types = []
 
-        if not character_id or not skin_id or not character_name or not rarity or not icon_name or not element_types:
+        if not character_id or not skin_id or not character_name or not rarity or not icon_name or not element_types or not weapon_type:
             reason = f"{json_path.name} 缺少必要字段"
             if not element_types:
                 reason = f"{json_path.name} 缺少 FetterInfo.VisionBefore 元素字段"
+            elif not weapon_type:
+                reason = f"{json_path.name} 缺少或未知 Weapon 武器字段: {weapon_id}"
             skipped.append(
                 SkippedLabel(
                     character_id=character_id,
@@ -234,11 +256,13 @@ def rows_from_avatar_json(
                 avatar_dir=avatar_dir,
                 element_dir=element_dir,
                 background_dir=background_dir,
+                use_background=use_background,
                 character_id=character_id,
                 character_name=character_name,
                 skin_id=skin_id,
                 skin_name=skin_name,
                 element_type=element_type,
+                weapon_type=weapon_type,
                 rarity=rarity,
                 icon_name=icon_name,
                 split=split,
@@ -289,6 +313,7 @@ def generate_labels(
     background_dir: Path,
     out_path: Path,
     split: str,
+    use_background: bool = False,
 ) -> tuple[int, list[SkippedLabel], list[UnmatchedAvatarImage]]:
     if not json_dir.exists():
         raise FileNotFoundError(f"找不到 JSON 目录: {json_dir}")
@@ -296,7 +321,7 @@ def generate_labels(
         raise FileNotFoundError(f"找不到角色图目录: {avatar_dir}")
     if not element_dir.exists():
         raise FileNotFoundError(f"找不到元素图标目录: {element_dir}")
-    if not background_dir.exists():
+    if use_background and not background_dir.exists():
         raise FileNotFoundError(f"找不到背景图目录: {background_dir}")
 
     all_rows: list[dict[str, str]] = []
@@ -309,6 +334,7 @@ def generate_labels(
             avatar_dir=avatar_dir,
             element_dir=element_dir,
             background_dir=background_dir,
+            use_background=use_background,
             split=split,
         )
         all_rows.extend(rows)
@@ -323,11 +349,13 @@ def generate_labels(
             avatar_dir=avatar_dir,
             element_dir=element_dir,
             background_dir=background_dir,
+            use_background=use_background,
             character_id=manual["character_id"],
             character_name=manual["character_name"],
             skin_id=manual["skin_id"],
             skin_name=manual["skin_name"],
             element_type=manual["element_type"],
+            weapon_type=manual.get("weapon_type", ""),
             rarity=manual["rarity"],
             icon_name=manual["icon_name"],
             split=split,
@@ -365,18 +393,27 @@ def generate_labels(
 def parse_args() -> argparse.Namespace:
     root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description="从 Avatar JSON 生成 data/generated/labels.csv")
-    parser.add_argument("--json-dir", default=str(root / "data" / "metadata" / "avatar_json"))
-    parser.add_argument("--avatar-dir", default=str(root / "assets" / "icons" / "avatars"))
-    parser.add_argument("--element-dir", default=str(root / "assets" / "icons" / "elements"))
-    parser.add_argument("--background-dir", default=str(root / "assets" / "backgrounds"))
+    parser.add_argument("--config", default=None)
+    parser.add_argument("--json-dir", default=str(root / "data" / "metadata" / "Avatar"))
+    parser.add_argument("--avatar-dir", default=str(root / "assets" / "icons" / "UI_AvatarIcon"))
+    parser.add_argument("--element-dir", default=str(root / "assets" / "icons" / "UI_Buff_Element"))
+    parser.add_argument("--background-dir", default=str(root / "assets" / "backgrounds" / "UI_QUALITY"))
     parser.add_argument("--out", default=str(root / "data" / "generated" / "labels.csv"))
     parser.add_argument("--split", default="train")
+    parser.add_argument("--use-background", action="store_true")
+    parser.add_argument("--no-background", action="store_true")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     root = Path(__file__).resolve().parents[2]
+    use_background = bool(args.use_background)
+    if args.config and not args.use_background and not args.no_background:
+        cfg = load_config(args.config)
+        use_background = bool(cfg.get("compose", {}).get("use_background", False))
+    if args.no_background:
+        use_background = False
     count, skipped, unmatched_avatar_images = generate_labels(
         root=root,
         json_dir=Path(args.json_dir),
@@ -385,6 +422,7 @@ def main() -> None:
         background_dir=Path(args.background_dir),
         out_path=Path(args.out),
         split=args.split,
+        use_background=use_background,
     )
     for item in skipped:
         print(

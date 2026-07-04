@@ -47,6 +47,7 @@ def build_prototypes(config_path: str | Path, checkpoint_path: str | Path, out_p
                 "skin_id": row["skin_id"],
                 "skin_name": row["skin_name"],
                 "element_type": row["element_type"],
+                "weapon_type": row.get("weapon_type", ""),
                 "rarity": row["rarity"],
                 "embedding": encode_vector(proto),
             }

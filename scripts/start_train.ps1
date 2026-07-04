@@ -66,7 +66,7 @@ function Remove-TrainingArtifact {
 }
 
 Invoke-Step (Zh "\u751f\u6210 labels.csv") {
-    & $Python scripts\generate_labels.py
+    & $Python scripts\generate_labels.py --config $Config
 }
 
 Invoke-Step (Zh "\u8bed\u6cd5\u68c0\u67e5") {

@@ -4,6 +4,7 @@ torchvision
 --extra-index-url https://pypi.org/simple
 opencv-python
 pandas
+Pillow
 scikit-learn
 pyyaml
 tqdm

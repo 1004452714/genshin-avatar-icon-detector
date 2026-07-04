@@ -33,10 +33,10 @@ REQUIRED_COLUMNS = {
     "rarity",
     "image_path",
     "element_icon_path",
-    "background_path",
 }
 
 ALLOWED_ELEMENT_TYPES = {"冰", "风", "雷", "水", "火", "岩", "草"}
+ALLOWED_WEAPON_TYPES = {"单手剑", "法器", "双手剑", "弓", "长柄武器"}
 
 
 def load_labels(path: str | Path) -> pd.DataFrame:
@@ -114,6 +114,9 @@ class AvatarDataset(Dataset):
         self.mappings = mappings
         self.rng = np.random.default_rng(seed)
         self.views_per_sample = max(1, int(views_per_sample))
+        self.cache_images = bool(cfg.get("data", {}).get("cache_images", True))
+        self._rgba_cache: dict[str, np.ndarray] = {}
+        self._rgb_cache: dict[str, np.ndarray] = {}
         image_size = cfg["data"].get("image_size", [115, 115])
         self.size = (int(image_size[0]), int(image_size[1]))
         norm = cfg.get("normalization", {})
@@ -156,13 +159,59 @@ class AvatarDataset(Dataset):
             return 0
         return int(self.rng.integers(-max_abs_px, max_abs_px + 1))
 
+    def read_rgba_cached(self, path: Path) -> np.ndarray:
+        if not self.cache_images:
+            return read_rgba(path)
+        key = str(path)
+        image = self._rgba_cache.get(key)
+        if image is None:
+            image = read_rgba(path)
+            self._rgba_cache[key] = image
+        return image
+
+    def read_rgb_cached(self, path: Path) -> np.ndarray:
+        if not self.cache_images:
+            return read_rgb(path)
+        key = str(path)
+        image = self._rgb_cache.get(key)
+        if image is None:
+            image = read_rgb(path)
+            self._rgb_cache[key] = image
+        return image
+
+    def sample_background_mode(self) -> str:
+        if not self.train or self.prototype:
+            return "unpacked"
+
+        mix_cfg = self.cfg.get("augment", {}).get("background_mix", {})
+        if not bool(mix_cfg.get("enabled", False)):
+            return "unpacked"
+
+        weights = np.asarray(
+            [
+                float(mix_cfg.get("unpacked_probability", 0.70)),
+                float(mix_cfg.get("randomized_probability", 0.20)),
+                float(mix_cfg.get("dropout_probability", 0.10)),
+            ],
+            dtype=np.float64,
+        )
+        if weights.sum() <= 0:
+            return "unpacked"
+        return str(self.rng.choice(["unpacked", "randomized", "dropout"], p=weights / weights.sum()))
+
+    def load_background(self, row: pd.Series) -> np.ndarray:
+        bg_path = resolve_data_path(self.root, row.get("background_path", ""))
+        if bg_path and bg_path.exists():
+            return resize_cover(self.read_rgb_cached(bg_path), self.size)
+        return solid_background(self.size, row.get("rarity", ""))
+
     def compose_overlays(self, avatar: np.ndarray, row: pd.Series) -> np.ndarray:
         compose_cfg = self.cfg.get("compose", {})
         element_path = resolve_data_path(self.root, row["element_icon_path"])
         if element_path is None or not element_path.exists():
             raise FileNotFoundError(f"找不到元素图标: {element_path}")
 
-        element_icon = read_rgba(element_path)
+        element_icon = self.read_rgba_cached(element_path)
         element_offset = compose_cfg.get("element_offset", [7, 7])
         element_x = int(element_offset[0]) if len(element_offset) > 0 else 7
         element_y = int(element_offset[1]) if len(element_offset) > 1 else 7
@@ -197,7 +246,7 @@ class AvatarDataset(Dataset):
         icon_path = resolve_data_path(self.root, icon_path_text)
         if icon_path is None or not icon_path.exists():
             raise FileNotFoundError(f"找不到养成图标: {icon_path}")
-        training_icon = read_rgba(icon_path)
+        training_icon = self.read_rgba_cached(icon_path)
         if self.train and not self.prototype:
             scale_range = training_cfg.get("scale_range", [1.5, 1.5])
             training_scale = float(self.rng.uniform(float(scale_range[0]), float(scale_range[1])))
@@ -217,16 +266,17 @@ class AvatarDataset(Dataset):
         if avatar_path is None or not avatar_path.exists():
             raise FileNotFoundError(f"找不到角色图: {avatar_path}")
 
-        bg_path = resolve_data_path(self.root, row["background_path"])
-        if bg_path and bg_path.exists():
-            background = resize_cover(read_rgb(bg_path), self.size)
+        compose_cfg = self.cfg.get("compose", {})
+        use_background = bool(compose_cfg.get("use_background", False))
+        background_mode = self.sample_background_mode() if use_background else "dropout"
+        if background_mode == "dropout":
+            background = np.zeros((self.size[1], self.size[0], 3), dtype=np.uint8)
         else:
-            background = solid_background(self.size, row.get("rarity", ""))
-        if self.train and augment_cfg.get("background_drift"):
+            background = self.load_background(row)
+        if background_mode == "randomized" and augment_cfg.get("background_drift"):
             background = random_color_drift(background, augment_cfg["background_drift"], self.rng)
 
-        avatar = self.compose_overlays(read_rgba(avatar_path), row)
-        compose_cfg = self.cfg.get("compose", {})
+        avatar = self.compose_overlays(self.read_rgba_cached(avatar_path), row)
         avatar_base_scale = float(compose_cfg.get("avatar_scale", 1.0))
         avatar_offset = compose_cfg.get("avatar_offset", [0, 0])
         base_shift_x = int(avatar_offset[0]) if len(avatar_offset) > 0 else 0
@@ -242,10 +292,13 @@ class AvatarDataset(Dataset):
             shift_y = base_shift_y
 
         foreground = resize_contain_rgba(avatar, self.size, scale, shift_x, shift_y)
+        visible_mask = foreground[..., 3:4] > 0
         image = alpha_blend(foreground, background)
         if self.train:
             image = random_color_drift(image, augment_cfg, self.rng)
             image = random_degrade(image, augment_cfg, self.rng)
+            if background_mode == "dropout":
+                image = np.where(visible_mask, image, 0).astype(np.uint8)
 
         mask_cfg = self.cfg.get("mask", {})
         if mask_cfg.get("enabled", True):
