@@ -5,6 +5,8 @@
 
 用于训练和测试原神角色头像/角色卡识别模型。模型导出为 `ONNX + prototypes.csv`，推理时按 `variant_id` 进行 embedding 检索，返回角色、皮肤和元素信息。
 
+![AvatarDetect 实机窗口测试效果](pic.webp)
+
 ## 数据目录
 
 仓库只提交代码、配置、示例 CSV、目录占位和 JSON 元数据；不提交训练 PNG、checkpoint、ONNX、prototypes、生成 labels 或测试截图。
